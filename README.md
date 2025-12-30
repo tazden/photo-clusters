@@ -2,7 +2,6 @@ Photo Clusters (Expo + TypeScript + Expo Router)
 
 Приложение на Expo, которое получает доступ к галерее устройства, кластеризует фотографии в “смысловые группы” и позволяет просматривать фото внутри кластера.
 Главный акцент — осмысленная кластеризация, чтобы при открытии кластера было ощущение “да, это логично объединено”.
-
 Демо-функционал
 •	Запрашивает доступ к фото на устройстве
 •	Показывает список кластеров (обложка + дата/время + количество фото)
@@ -30,14 +29,12 @@ npx expo start
 •	Java 17 (JDK 17)
 •	Телефон: включить USB debugging
 •	adb должен быть доступен
-
 1) (Windows/cmd) Включить Java 17 в текущей сессии
 set JAVA_HOME=C:\Program Files\Java\jdk-17.0.2
 
 set PATH=%JAVA_HOME%\bin;%PATH%
 
 java -version
-
 2) Указать Android SDK (если нужно)
 Обычно SDK лежит тут: %LOCALAPPDATA%\Android\Sdk
 set ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk
@@ -45,13 +42,11 @@ set ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk
 set PATH=%ANDROID_HOME%\platform-tools;%PATH%
 
 adb version
-
 3) Prebuild + установка на телефон
 npx expo prebuild --clean
 
 npx expo run:android
 После этого на телефоне появится установленное приложение Photo Clusters.
-
 4) Запуск Metro через USB (стабильно, без проблем Wi‑Fi)
 adb reverse tcp:8081 tcp:8081
 
@@ -95,4 +90,5 @@ Android Gradle plugin requires Java 17
 5.	Время + гео: объединять фото, если разрыв по времени небольшой и расстояние между точками < N км (например 1–2 км).
 6.	Кластеры по типу контента: отдельный кластер “Скриншоты”, “Документы”, “Фото товаров” (простые эвристики).
 7.	Подписи локации: если есть координаты, показывать город/место в названии кластера.
-
+Автор
+Денис
