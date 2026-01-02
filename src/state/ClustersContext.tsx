@@ -1,7 +1,18 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
 import { Platform } from 'react-native';
 import * as MediaLibrary from 'expo-media-library';
-import { Cluster, clusterByTime, toMillisMaybeSeconds } from '../cluster/timeClustering';
+import {
+  Cluster,
+  clusterByTime,
+  toMillisMaybeSeconds,
+} from '../cluster/timeClustering';
 
 type ClusterPhotosMap = Record<string, MediaLibrary.Asset[]>;
 
@@ -25,8 +36,14 @@ const Ctx = createContext<ClustersState | null>(null);
 const MAX_ASSETS = 2500;
 const PAGE_SIZE = 200;
 
-// Небольшой "зазор", чтобы не терять фото на границах моментов из-за округления времени
+// Небольшой "зазор", чтобы не терять фото на границах моментов
 const MOMENT_EDGE_PADDING_MS = 2 * 60 * 1000; // 2 минуты
+
+function momentRange(startMs: number, endMs: number) {
+  const createdAfter = new Date(Math.max(0, startMs - MOMENT_EDGE_PADDING_MS));
+  const createdBefore = new Date(endMs + MOMENT_EDGE_PADDING_MS);
+  return { createdAfter, createdBefore };
+}
 
 async function fetchRecentPhotoAssets(): Promise<MediaLibrary.Asset[]> {
   const all: MediaLibrary.Asset[] = [];
@@ -49,43 +66,20 @@ async function fetchRecentPhotoAssets(): Promise<MediaLibrary.Asset[]> {
   return all;
 }
 
-async function fetchPhotoAssetsByTimeRange(startTimeMs: number, endTimeMs: number): Promise<MediaLibrary.Asset[]> {
-  const assets: MediaLibrary.Asset[] = [];
-  let after: string | undefined;
-  let hasNext = true;
-
-  const createdAfter = new Date(Math.max(0, startTimeMs - MOMENT_EDGE_PADDING_MS));
-  const createdBefore = new Date(endTimeMs + MOMENT_EDGE_PADDING_MS);
-
-  while (hasNext && assets.length < MAX_ASSETS) {
-    const page = await MediaLibrary.getAssetsAsync({
-      first: Math.min(PAGE_SIZE, MAX_ASSETS - assets.length),
-      after,
-      mediaType: [MediaLibrary.MediaType.photo],
-      sortBy: [MediaLibrary.SortBy.creationTime],
-      createdAfter,
-      createdBefore,
-    });
-
-    assets.push(...page.assets);
-    hasNext = page.hasNextPage;
-    after = page.endCursor;
-  }
-
-  return assets;
-}
-
+/**
+ * iOS moments:
+ * 1) обложку/кол-во считаем по реально доступным фото через createdAfter/createdBefore
+ * 2) моменты без доступных фото НЕ добавляем (чтобы не было "серых" и пустых)
+ */
 async function buildIOSMomentClusters(): Promise<Cluster[]> {
   const moments = await MediaLibrary.getMomentsAsync();
   const result: Cluster[] = [];
 
-  for (const m of moments) {
-    // В expo-media-library moments приходят как "albums" типа moment
-    // (но на практике при limited access выборка по album может ломаться).
-    if ((m as any).type !== 'moment') continue;
+  for (const m of moments as any[]) {
+    if (m.type !== 'moment') continue;
 
-    const startMs = toMillisMaybeSeconds((m as any).startTime);
-    const endMs = toMillisMaybeSeconds((m as any).endTime);
+    const startMs = toMillisMaybeSeconds(m.startTime);
+    const endMs = toMillisMaybeSeconds(m.endTime);
 
     const startD = new Date(startMs);
     const endD = new Date(endMs);
@@ -96,28 +90,32 @@ async function buildIOSMomentClusters(): Promise<Cluster[]> {
         : `${startD.toLocaleDateString()} – ${endD.toLocaleDateString()}`;
 
     const place =
-      (m as any).locationNames && (m as any).locationNames.length > 0 ? (m as any).locationNames[0] : undefined;
+      m.locationNames && m.locationNames.length > 0 ? m.locationNames[0] : undefined;
 
-    // Обложку берём из диапазона времени (стабильнее при limited access)
+    const { createdAfter, createdBefore } = momentRange(startMs, endMs);
+
+    // Берём 1 фото для обложки + totalCount для корректного count
     const coverPage = await MediaLibrary.getAssetsAsync({
       first: 1,
       mediaType: [MediaLibrary.MediaType.photo],
       sortBy: [MediaLibrary.SortBy.creationTime],
-      createdAfter: new Date(Math.max(0, startMs - MOMENT_EDGE_PADDING_MS)),
-      createdBefore: new Date(endMs + MOMENT_EDGE_PADDING_MS),
+      createdAfter,
+      createdBefore,
     });
 
+    // Ключевой фикс: если реально доступных фото нет — не показываем этот moment
+    if (coverPage.totalCount === 0 || coverPage.assets.length === 0) continue;
+
     result.push({
-      id: `moment_${(m as any).id}`,
+      id: `moment_${m.id}`,
       kind: 'moment',
       title: place ? place : titleDate,
       subtitle: place ? titleDate : undefined,
       coverUri: coverPage.assets[0]?.uri,
-      // assetCount у моментов может включать не только фото; для UI достаточно приблизительно
-      count: (m as any).assetCount ?? undefined,
+      count: coverPage.totalCount, // НЕ m.assetCount
       startTimeMs: startMs,
       endTimeMs: endMs,
-      albumId: (m as any).id,
+      albumId: m.id,
     });
   }
 
@@ -158,9 +156,14 @@ export function ClustersProvider({ children }: { children: React.ReactNode }) {
     setError(undefined);
 
     try {
-      const momentClusters: Cluster[] = Platform.OS === 'ios' ? await buildIOSMomentClusters() : [];
+      const momentClusters: Cluster[] =
+        Platform.OS === 'ios' ? await buildIOSMomentClusters() : [];
+
       const assets = await fetchRecentPhotoAssets();
-      const timeClusters = clusterByTime(assets, { timeGapMinutes: 180, minClusterSize: 3 });
+      const timeClusters = clusterByTime(assets, {
+        timeGapMinutes: 180,
+        minClusterSize: 3,
+      });
 
       setClusters([...momentClusters, ...timeClusters]);
 
@@ -185,41 +188,43 @@ export function ClustersProvider({ children }: { children: React.ReactNode }) {
       const cluster = clusters.find(c => c.id === clusterId);
       if (!cluster) return;
 
-      // Главный фикс: moments на iOS грузим по времени, а не по albumId,
-      // чтобы не получать один и тот же список при "Selected Photos" (limited access).
       if (cluster.kind === 'moment') {
-        if (cluster.startTimeMs != null && cluster.endTimeMs != null) {
-          const byRange = await fetchPhotoAssetsByTimeRange(cluster.startTimeMs, cluster.endTimeMs);
-          setClusterPhotos(prev => ({ ...prev, [clusterId]: byRange }));
+        // Главный фикс: грузим фото moment по времени (а не album),
+        // чтобы при Limited Photos не получать один и тот же список.
+        if (cluster.startTimeMs == null || cluster.endTimeMs == null) {
+          setClusterPhotos(prev => ({ ...prev, [clusterId]: [] }));
           return;
         }
 
-        // Фолбэк: если вдруг нет времени — пробуем как album
-        if (cluster.albumId) {
-          const assets: MediaLibrary.Asset[] = [];
-          let after: string | undefined;
-          let hasNext = true;
+        const { createdAfter, createdBefore } = momentRange(
+          cluster.startTimeMs,
+          cluster.endTimeMs
+        );
 
-          while (hasNext && assets.length < MAX_ASSETS) {
-            const page = await MediaLibrary.getAssetsAsync({
-              first: Math.min(PAGE_SIZE, MAX_ASSETS - assets.length),
-              after,
-              album: cluster.albumId,
-              mediaType: [MediaLibrary.MediaType.photo],
-              sortBy: [MediaLibrary.SortBy.creationTime],
-            });
-            assets.push(...page.assets);
-            hasNext = page.hasNextPage;
-            after = page.endCursor;
-          }
+        const assets: MediaLibrary.Asset[] = [];
+        let after: string | undefined;
+        let hasNext = true;
 
-          setClusterPhotos(prev => ({ ...prev, [clusterId]: assets }));
+        while (hasNext && assets.length < MAX_ASSETS) {
+          const page = await MediaLibrary.getAssetsAsync({
+            first: Math.min(PAGE_SIZE, MAX_ASSETS - assets.length),
+            after,
+            mediaType: [MediaLibrary.MediaType.photo],
+            sortBy: [MediaLibrary.SortBy.creationTime],
+            createdAfter,
+            createdBefore,
+          });
+
+          assets.push(...page.assets);
+          hasNext = page.hasNextPage;
+          after = page.endCursor;
         }
 
+        setClusterPhotos(prev => ({ ...prev, [clusterId]: assets }));
         return;
       }
 
-      // time clusters уже предзагружены в reload()
+      // time clusters уже префиллятся в reload()
     },
     [clusterPhotos, clusters]
   );
@@ -240,7 +245,17 @@ export function ClustersProvider({ children }: { children: React.ReactNode }) {
       reload,
       loadClusterPhotosIfNeeded,
     }),
-    [permission, requestPermission, openPermissionsPickerIfAvailable, isLoading, error, clusters, clusterPhotos, reload, loadClusterPhotosIfNeeded]
+    [
+      permission,
+      requestPermission,
+      openPermissionsPickerIfAvailable,
+      isLoading,
+      error,
+      clusters,
+      clusterPhotos,
+      reload,
+      loadClusterPhotosIfNeeded,
+    ]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
