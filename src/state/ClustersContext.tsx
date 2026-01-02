@@ -9,13 +9,10 @@ type ClustersState = {
   permission: MediaLibrary.PermissionResponse | null;
   requestPermission: () => Promise<void>;
   openPermissionsPickerIfAvailable: () => Promise<void>;
-
   isLoading: boolean;
   error?: string;
-
   clusters: Cluster[];
   clusterPhotos: ClusterPhotosMap;
-
   reload: () => Promise<void>;
   loadClusterPhotosIfNeeded: (clusterId: string) => Promise<void>;
 };
@@ -29,7 +26,6 @@ async function fetchRecentPhotoAssets(): Promise<MediaLibrary.Asset[]> {
   const all: MediaLibrary.Asset[] = [];
   let after: string | undefined;
   let hasNext = true;
-
   while (hasNext && all.length < MAX_ASSETS) {
     const page = await MediaLibrary.getAssetsAsync({
       first: Math.min(PAGE_SIZE, MAX_ASSETS - all.length),
@@ -37,19 +33,16 @@ async function fetchRecentPhotoAssets(): Promise<MediaLibrary.Asset[]> {
       mediaType: [MediaLibrary.MediaType.photo],
       sortBy: [MediaLibrary.SortBy.creationTime],
     });
-
     all.push(...page.assets);
     hasNext = page.hasNextPage;
     after = page.endCursor;
   }
-
   return all;
 }
 
 async function buildIOSMomentClusters(): Promise<Cluster[]> {
   const moments = await MediaLibrary.getMomentsAsync();
   const result: Cluster[] = [];
-
   for (const m of moments) {
     if (m.type !== 'moment') continue;
 
@@ -62,10 +55,8 @@ async function buildIOSMomentClusters(): Promise<Cluster[]> {
 
     const startMs = toMillisMaybeSeconds(m.startTime);
     const endMs = toMillisMaybeSeconds(m.endTime);
-
     const startD = new Date(startMs);
     const endD = new Date(endMs);
-
     const titleDate =
       startD.toDateString() === endD.toDateString()
         ? startD.toLocaleDateString()
@@ -76,31 +67,24 @@ async function buildIOSMomentClusters(): Promise<Cluster[]> {
     result.push({
       id: `moment_${m.id}`,
       kind: 'moment',
-      title: place ? place : titleDate,
+      title: place ? `${place}` : titleDate,
       subtitle: place ? titleDate : undefined,
       coverUri: cover.assets[0]?.uri,
       count: m.assetCount,
       startTimeMs: startMs,
       endTimeMs: endMs,
-      albumId: m.id,
+      albumId: m.id, // сохраняем ID момента
     });
   }
-
-  // newest first
   return result.sort((a, b) => (b.startTimeMs ?? 0) - (a.startTimeMs ?? 0));
 }
 
 export function ClustersProvider({ children }: { children: React.ReactNode }) {
-  const [permission, requestPermissionHook] = MediaLibrary.usePermissions({
-    granularPermissions: ['photo'],
-  });
-
+  const [permission, requestPermissionHook] = MediaLibrary.usePermissions({ granularPermissions: ['photo'] });
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
-
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [clusterPhotos, setClusterPhotos] = useState<ClusterPhotosMap>({});
-
   const isGranted = permission?.granted;
 
   const requestPermission = useCallback(async () => {
@@ -108,20 +92,13 @@ export function ClustersProvider({ children }: { children: React.ReactNode }) {
   }, [requestPermissionHook]);
 
   const openPermissionsPickerIfAvailable = useCallback(async () => {
-    try {
-      // iOS and Android 14+ (no-op otherwise)
-      await MediaLibrary.presentPermissionsPickerAsync(['photo']);
-    } catch {
-      // ignore
-    }
+    try { await MediaLibrary.presentPermissionsPickerAsync(['photo']); } catch {}
   }, []);
 
   const reload = useCallback(async () => {
     if (!isGranted) return;
-
     setIsLoading(true);
     setError(undefined);
-
     try {
       const momentClusters: Cluster[] = Platform.OS === 'ios' ? await buildIOSMomentClusters() : [];
       const assets = await fetchRecentPhotoAssets();
@@ -129,7 +106,6 @@ export function ClustersProvider({ children }: { children: React.ReactNode }) {
 
       setClusters([...momentClusters, ...timeClusters]);
 
-      // Prefill time clusters with already fetched assets
       const timeMap: ClusterPhotosMap = {};
       for (const c of timeClusters) {
         const ids = new Set(c.assetIds ?? []);
@@ -150,33 +126,44 @@ export function ClustersProvider({ children }: { children: React.ReactNode }) {
     if (!cluster) return;
 
     if (cluster.kind === 'moment' && cluster.albumId) {
-      const assets: MediaLibrary.Asset[] = [];
-      let after: string | undefined;
-      let hasNext = true;
+      try {
+        // ✅ FIX: нужно передавать объект moment, а не строку id
+        const moments = await MediaLibrary.getMomentsAsync();
+        const moment = moments.find(m => m.id === cluster.albumId);
+        if (!moment) {
+          setClusterPhotos(prev => ({ ...prev, [clusterId]: [] }));
+          return;
+        }
 
-      while (hasNext && assets.length < MAX_ASSETS) {
-        const page = await MediaLibrary.getAssetsAsync({
-          first: Math.min(PAGE_SIZE, MAX_ASSETS - assets.length),
-          after,
-          album: cluster.albumId,
-          mediaType: [MediaLibrary.MediaType.photo],
-          sortBy: [MediaLibrary.SortBy.creationTime],
-        });
-        assets.push(...page.assets);
-        hasNext = page.hasNextPage;
-        after = page.endCursor;
+        const assets: MediaLibrary.Asset[] = [];
+        let after: string | undefined;
+        let hasNext = true;
+
+        while (hasNext && assets.length < MAX_ASSETS) {
+          const page = await MediaLibrary.getAssetsAsync({
+            first: Math.min(PAGE_SIZE, MAX_ASSETS - assets.length),
+            after,
+            album: moment, // ✅ вот ключевая правка
+            mediaType: [MediaLibrary.MediaType.photo],
+            sortBy: [MediaLibrary.SortBy.creationTime],
+          });
+
+          assets.push(...page.assets);
+          hasNext = page.hasNextPage;
+          after = page.endCursor;
+        }
+
+        setClusterPhotos(prev => ({ ...prev, [clusterId]: assets }));
+      } catch {
+        setClusterPhotos(prev => ({ ...prev, [clusterId]: [] }));
       }
-
-      setClusterPhotos(prev => ({ ...prev, [clusterId]: assets }));
     }
   }, [clusterPhotos, clusters]);
 
-  useEffect(() => {
-    if (isGranted) void reload();
-  }, [isGranted, reload]);
+  useEffect(() => { if (isGranted) void reload(); }, [isGranted, reload]);
 
   const value = useMemo<ClustersState>(() => ({
-    permission,
+    permission: permission ?? null,
     requestPermission,
     openPermissionsPickerIfAvailable,
     isLoading,
