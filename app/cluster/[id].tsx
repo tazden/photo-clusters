@@ -5,7 +5,10 @@ import { useClusters } from '../../src/state/ClustersContext';
 import { AssetGrid } from '../../src/ui/AssetGrid';
 
 export default function ClusterScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const params = useLocalSearchParams();
+  const rawId = (params as any).id as string | string[] | undefined;
+  const id = Array.isArray(rawId) ? rawId[0] : rawId;
+
   const { clusters, clusterPhotos, loadClusterPhotosIfNeeded } = useClusters();
 
   const cluster = useMemo(() => clusters.find(c => c.id === id), [clusters, id]);
@@ -39,7 +42,7 @@ export default function ClusterScreen() {
           <Text style={styles.p}>Нет фото в этом кластере</Text>
         </View>
       ) : (
-        <AssetGrid assets={photos} />
+        <AssetGrid key={id} assets={photos} />
       )}
     </SafeAreaView>
   );
